@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import tempfile
 from datetime import datetime
 import bcrypt
 from sqlalchemy import (
@@ -12,9 +13,11 @@ from sqlalchemy import (
     Float,
     DateTime,
     ForeignKey,
-    desc
+    desc,
+    text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.pool import StaticPool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -80,12 +83,43 @@ class MockInterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ============================================================
-# DATABASE CONNECTION & INITIALIZATION
-# ============================================================
+def create_safe_sqlite_engine():
+    """
+    Probes writable locations for SQLite (local folder, temp directory, user home, or in-memory).
+    Guarantees successful table creation across cloud platforms (Streamlit Cloud, Heroku, Docker).
+    """
+    candidates = [
+        ("Current Working Dir", os.path.abspath("resume_analyzer.db")),
+        ("System Temp Dir", os.path.join(tempfile.gettempdir(), "resume_analyzer.db")),
+        ("User Home Dir", os.path.join(os.path.expanduser("~"), "resume_analyzer.db"))
+    ]
+
+    for label, path in candidates:
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.exists(d):
+                continue
+            test_engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+            with test_engine.connect() as conn:
+                conn.execute(text("CREATE TABLE IF NOT EXISTS _probe (id INT)"))
+                conn.execute(text("DROP TABLE _probe"))
+                conn.commit()
+            return test_engine, "SQLite", f"Using SQLite ({label}: {path})"
+        except Exception as e:
+            logger.debug(f"SQLite probe failed for {path}: {e}")
+
+    # Ultimate fallback: In-Memory SQLite (always works)
+    mem_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
+    return mem_engine, "SQLite", "Using In-Memory SQLite (Safe Cloud Mode)"
+
+
 def get_db_engine():
     """
-    Connect to MySQL if configured, otherwise automatically fall back to SQLite.
+    Connect to MySQL if configured, otherwise automatically fall back to safe SQLite.
     Returns: (engine, engine_type_str, message)
     """
     db_url = os.getenv("DATABASE_URL")
@@ -121,10 +155,8 @@ def get_db_engine():
         except Exception as e:
             logger.warning(f"MySQL connection failed ({e}). Falling back to SQLite.")
 
-    # SQLite Fallback (Zero config, always reliable)
-    sqlite_path = os.path.abspath("resume_analyzer.db")
-    engine = create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
-    return engine, "SQLite", f"Using local SQLite database ({sqlite_path})"
+    # SQLite Safe Fallback
+    return create_safe_sqlite_engine()
 
 
 ENGINE, DB_TYPE, DB_STATUS_MSG = get_db_engine()
@@ -132,9 +164,17 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=ENGINE)
 
 
 def init_db():
-    """Create all tables and seed initial default users."""
-    Base.metadata.create_all(bind=ENGINE)
-    seed_default_users()
+    """Create all tables and seed initial default users with resilient fallback."""
+    global ENGINE, SessionLocal, DB_TYPE, DB_STATUS_MSG
+    try:
+        Base.metadata.create_all(bind=ENGINE)
+        seed_default_users()
+    except Exception as e:
+        logger.warning(f"Initial table creation failed on {DB_TYPE} ({e}). Switching to in-memory/temp SQLite.")
+        ENGINE, DB_TYPE, DB_STATUS_MSG = create_safe_sqlite_engine()
+        SessionLocal.configure(bind=ENGINE)
+        Base.metadata.create_all(bind=ENGINE)
+        seed_default_users()
 
 
 def get_db():
