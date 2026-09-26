@@ -246,8 +246,12 @@ with st.sidebar:
     st.divider()
 
     # Groq API Key Configuration
-    st.subheader("⚙️ Groq API Configuration")
     env_key = os.getenv("GROQ_API_KEY", "")
+    if not env_key:
+        try:
+            env_key = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            pass
     groq_api_key = st.text_input(
         "Groq API Key",
         value=env_key,

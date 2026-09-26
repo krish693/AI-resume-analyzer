@@ -95,6 +95,17 @@ def get_db_engine():
     mysql_db = os.getenv("MYSQL_DATABASE")
     mysql_port = os.getenv("MYSQL_PORT", "3306")
 
+    try:
+        import streamlit as st
+        db_url = db_url or st.secrets.get("DATABASE_URL")
+        mysql_host = mysql_host or st.secrets.get("MYSQL_HOST")
+        mysql_user = mysql_user or st.secrets.get("MYSQL_USER")
+        mysql_password = mysql_password or st.secrets.get("MYSQL_PASSWORD")
+        mysql_db = mysql_db or st.secrets.get("MYSQL_DATABASE")
+        mysql_port = mysql_port or st.secrets.get("MYSQL_PORT", "3306")
+    except Exception:
+        pass
+
     # If explicit MySQL URL or individual MySQL params are present
     if not db_url and mysql_host and mysql_user and mysql_db:
         pwd_part = f":{mysql_password}" if mysql_password else ""

@@ -16,6 +16,12 @@ def get_groq_client(api_key: str = None) -> Groq:
     """Creates a Groq client from argument, st.secrets, or environment."""
     key = api_key or os.getenv("GROQ_API_KEY")
     if not key:
+        try:
+            import streamlit as st
+            key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            pass
+    if not key:
         return None
     return Groq(api_key=key.strip())
 
